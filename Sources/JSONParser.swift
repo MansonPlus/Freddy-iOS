@@ -7,6 +7,9 @@
 //
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 private struct Literal {
     static let BACKSLASH     = UInt8(ascii: "\\")
@@ -503,8 +506,11 @@ public struct JSONParser {
         var exponent = Double(0)
         var position = 0.1
 
-        // This would be more natural as `while true { ... }` with a meaningful .Done case,
-        // but that causes compile time explosion in Swift 2.2. :-|
+        // Track whether the literal's significand is non-zero (e.g. "0.0" is false, "0.0001" is true).
+        // This lets us treat underflow-to-zero as an overflow/underflow condition only when the literal
+        // was actually non-zero (matching existing tests/behavior).
+        var hasNonZeroSignificand = (value != 0)
+
         while parser.state != .done {
             switch parser.state {
             case .leadingMinus, .leadingZero, .preDecimalDigits:
@@ -515,6 +521,7 @@ public struct JSONParser {
 
             case .postDecimalDigits:
                 parser.parsePostDecimalDigits { c in
+                    if c != Literal.zero { hasNonZeroSignificand = true }
                     value += position * Double(c - Literal.zero)
                     position /= 10
                 }
@@ -536,7 +543,17 @@ public struct JSONParser {
         }
 
         loc = parser.loc
-        return .double(Double(sign.rawValue) * value * pow(10, Double(exponentSign.rawValue) * exponent))
+
+        let result = Double(sign.rawValue) * value * pow(10, Double(exponentSign.rawValue) * exponent)
+
+        // Overflow/underflow detection:
+        // - Overflow => +/-infinity
+        // - Underflow of a non-zero literal => 0.0
+        if result.isInfinite || (result == 0 && hasNonZeroSignificand) {
+            throw InternalError.numberOverflow(offset: parser.start)
+        }
+
+        return .double(result)
     }
 
 
@@ -599,10 +616,9 @@ public struct JSONParser {
     }
 
     private func detectingFloatingPointErrors<T>(start loc: Int, _ f: () throws -> T) throws -> T {
-        let flags: Int32 = FE_UNDERFLOW | FE_OVERFLOW
-        feclearexcept(flags)
+        errno = 0
         let value = try f()
-        guard fetestexcept(flags) == 0 else {
+        if errno == ERANGE {
             throw InternalError.numberOverflow(offset: loc)
         }
         return value

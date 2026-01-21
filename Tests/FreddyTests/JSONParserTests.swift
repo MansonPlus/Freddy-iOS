@@ -37,7 +37,7 @@ private func ==(lhs: JSONParser.Error, rhs: JSONParser.Error) -> Bool {
         return lOffset == rOffset
     case let (.numberSymbolMissingDigits(lOffset), .numberSymbolMissingDigits(rOffset)):
         return lOffset == rOffset
-    case (_, _):
+    default:
         return false
     }
 }
